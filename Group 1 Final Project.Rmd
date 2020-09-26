@@ -1,0 +1,651 @@
+---
+title: "Measuring the Effectiveness of the Designated Hitter in Major League Baseball"
+author: "Rick Bump Ben Harwood Xavier Noel Kevin Schaeffer"
+date: "`r Sys.time()`"
+output:
+  pdf_document:
+    number_sections: yes
+    toc: yes
+  includes:
+    in_header: preamble.tex
+header-includes:
+- \usepackage{hyperref}
+- \usepackage{booktabs}
+
+abstract: Major League Baseball tasked our team with studying the effectiveness of
+  the designated hitter in the American League and making a recommendation for or
+  against the National League adopting the designated hitter as well. Using batting
+  statistic data, we compare batting trends as well as look at how different statistics 
+  influenced runs over the last century or so. We ultimately see that while there are 
+  distinct increases in hitting statistics after the institution
+  of the designated hitter, we find through linear regression that many of the stats'
+  contributions toward runs are effectively equal between the leagues, and we find
+  that after the designated hitter implementation in 1973, every stat not only influences
+  the National League more than the American League but also has lower predictive
+  inlfuence on the American Lague than it did prior to 1973. We ultimately conclude
+  and recommend that the National League should adopt the desingated hitter.
+nocite: |
+  @DH1, @DH2, @DH3, @DH4, @DH5, @DH6, @DH7
+
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+#install.packages("ggplot2")
+library(ggplot2)
+#install.packages("ggpubr")
+library(ggpubr)
+#install.packages("gridextra")
+library(gridExtra)
+#install.packages("dplyr")
+library(dplyr)
+#install.packages("RCurl")
+library(RCurl)
+#install.packages("tidyr")
+library(tidyr)
+#install.packages("moments")
+library(moments)
+#install.packages("knitr")
+library(knitr)
+#install.packages("lmtest")
+library(lmtest)
+#install.packages("EnvStats")
+library(EnvStats)
+#install.packages("reshape2")
+library(reshape2)
+#install.packages("xtable")
+library(xtable)
+#install.packages("kableExtra")
+library(kableExtra)
+#install.packages("pastecs")
+library(pastecs)
+#install.packages("RefManageR")
+library(RefManageR)
+
+hook_output = knit_hooks$get('output')
+knit_hooks$set(output = function(x, options) {
+  # this hook is used only when the linewidth option is not NULL
+  if (!is.null(n <- options$linewidth)) {
+    x = knitr:::split_lines(x)
+    # any lines wider than n should be wrapped
+    if (any(nchar(x) > n)) x = strwrap(x, width = n)
+    x = paste(x, collapse = '\n')
+  }
+  hook_output(x, options)
+})
+
+replace_RBI <- function(year)
+{
+  print(paste("Missing RBI data points:",sum(is.na(batting$RBI[which(batting$yearID <1973)]))))
+  meanRBI <- mean(batting$RBI[which(batting$yearID >= (year-(year%%10)) & batting$yearID <= (year-(year%%10)+9))],na.rm=TRUE)
+  batting$RBI[which(batting$yearID >= (year-(year%%10)) & batting$yearID <= (year-(year%%10)+9))] <- 
+  replace_na(batting$RBI[which(batting$yearID >= (year-(year%%10)) & batting$yearID <= (year-(year%%10)+9))], meanRBI)
+  print(paste("Missing RBI data points after replacement:",sum(is.na(batting$RBI[which(batting$yearID <1973)]))))
+}
+
+meanTest <- function(startyear, endyear,  stat, league)
+{
+  if (stat != "BA") {
+      mean(batting[[stat]][batting$yearID >= startyear & batting$yearID <= endyear & batting$lgID == league],na.rm=TRUE)}
+  else
+  {Hits <- sum(batting$Singles[batting$lgID == league & batting$yearID >= startyear & batting$yearID <= endyear])
+  Doubles <- sum(batting$Doubles[batting$lgID == league & batting$yearID >= startyear & batting$yearID <= endyear])
+  Triples <- sum(batting$Triples[batting$lgID == league & batting$yearID >= startyear & batting$yearID <= endyear])
+  HRs <- sum(batting$HR[batting$lgID == league & batting$yearID >= startyear & batting$yearID <= endyear])
+  ABs <- sum(batting$AB[batting$lgID == league & batting$yearID >= startyear & batting$yearID <= endyear])
+  BBs <- sum(batting$BB[batting$lgID == league & batting$yearID >= startyear & batting$yearID <= endyear])
+  signif((Hits+Doubles+Triples+HRs-BBs)/ABs,4)}
+}
+
+meanDecadesPlot<- function(startyear, endyear, stat, league)
+{
+  means <- c()
+  n <- ceiling(endyear/10)-floor(startyear/10)
+  for (i in 1:n)
+  {
+    means[[i]] <- meanTest(startyear -startyear%%10+10*(i-1), startyear-startyear%%10 +10*i, stat, league)
+  }
+  if (league=="AL") {c<- "#0073C2FF"} else{c <- "#EFC000FF"}
+  df <- data.frame(Decade=c(seq(startyear-startyear%%10, endyear-endyear%%10,10)), Means =round(means,2))
+  ggplot(df, aes(Decade, Means))+
+   # xlim(startyear -5 - startyear%%10, endyear+10-endyear%%10)+
+    ylim(0,1.5*max(means))+
+    geom_linerange(aes(x=Decade, ymin=0, ymax=Means),
+      color="lightgray", size=1.5,
+      position="identity")+
+    geom_point(size=2.5, color=c)+
+    #geom_vline(xintercept=1973, linetype = "dashed")+
+    geom_text(
+      aes(label=round(Means,3)),
+      position = "identity",
+      vjust=-1, size=3.5)+
+    scale_color_manual(values= c)+
+    ggtitle(paste(league,"Average",stat, "from", startyear,"to",endyear))+
+    scale_x_continuous(breaks=seq(startyear-startyear%%10, endyear + 10-endyear%%10,10))+
+    theme_pubclean()
+}
+
+combinedMeanDecadesPlot <- function(startyear, endyear, stat)
+{
+  ALmeans <- c()
+  NLmeans <- c()
+  n <- ceiling(endyear/10)-floor(startyear/10)
+  for (i in 1:n)
+    {
+      ALmeans[[i]] <- meanTest(startyear -startyear%%10+10*(i-1), startyear-startyear%%10 +10*i, stat, "AL")
+      NLmeans[[i]] <- meanTest(startyear -startyear%%10+10*(i-1), startyear -startyear%%10+10*i, stat, "NL")
+    }
+  means <- data.frame(League = c(rep("AL",n),rep("NL",n)), Decade=rep(c(seq(startyear-startyear%%10, endyear-endyear%%10,10)),2),Means=c(ALmeans, NLmeans))
+  ggplot(means, aes(Decade, Means, group=League))+
+          ylim(0.9*min(means$Means), 1.1*max(means$Means))+
+          #geom_linerange(
+           #   aes(x=Decade, ymin=0, ymax=Means, group=League),
+            #  color="lightgray", size=1.5,
+             # position=position_dodge(width=5))+
+          geom_line()+
+          geom_point(
+              aes(color=League), position="identity", size=3)+
+          #geom_text(
+           #   aes(label=round(Means,3), group=League),
+            #  position="identity",
+             # vjust=-1, size=3.5)+
+          scale_color_manual(values=c("#0073C2FF","#EFC000FF"))+
+   # geom_vline(xintercept=1973, linetype = "dashed")+
+          ggtitle(paste("Average",stat,"by decade from", startyear,"-",endyear))+
+          scale_x_continuous(breaks=seq(startyear-startyear%%10, endyear + 10-endyear%%10,10))+
+          theme_pubclean()
+}
+
+teamRunsbyYear <- function(team, year)
+{
+  sum(batting$R[which(batting$teamID==team & batting$yearID == year)])
+}
+
+teamRunsRange <- function(team, startyear, endyear)
+{
+  sum(batting$R[which(batting$teamID==team & batting$yearID >= startyear & batting$yearID < endyear)])
+}
+
+leagueRunsbyYear <- function(league, year)
+{
+  sum(batting$R[which(batting$lgID == league & batting$yearID == year)])
+}
+
+leagueRunsRange <- function (league, startyear, endyear, include)
+{
+  if (include=="Y") {n <- (endyear-startyear)+1}
+  else {n<- (endyear-startyear)}
+  runs <-c()
+  for (i in 1:n)
+  {
+    runs[[i]] <- leagueRunsbyYear(league, startyear+i-1)
+  }
+  sum(runs)
+}
+
+leagueMeanRuns <- function(league, startyear, endyear, include)
+{
+  means <- c()
+  if (include=="Y") {n <- (endyear-startyear)+1}
+  else {n<- (endyear-startyear)}
+  for (i in 1:n)
+  {
+    means[[i]] <- leagueRunsbyYear(league, startyear+i-1)/length(unique(managers$teamID[which(managers$yearID == startyear+i-1 & managers$lgID ==league)]))
+  }
+  mean(means,na.rm=TRUE)
+}
+
+leagueRunsPlot <- function(league, startyear, endyear, include)
+{
+  if (include=="Y") {n <- (endyear-startyear)+1}
+  else {n<- (endyear-startyear)}
+  runs <-c()
+  for (i in 1:n)
+  {
+    runs[[i]] <- leagueRunsbyYear(league, startyear+i-1)
+  }
+  Runs <- data.frame(Year=c(seq(startyear,startyear+n-1)), Wins=wins)
+  ggplot(Runs, aes(x=Year, y=Runs))+
+    geom_point()+
+    ggtitle(paste(league,"Runs for", startyear,"to",endyear))
+}
+
+leagueRunsCombinedPlot <- function(startyear, endyear, include)
+{
+  if (include=="Y") {n <- (endyear-startyear)+1}
+  else {n<- (endyear-startyear)}
+  ALruns <-c()
+  NLruns <-c()
+  for (i in 1:n)
+  {
+    ALruns[[i]] <- leagueRunsbyYear("AL", startyear+i-1)
+    NLruns[[i]] <- leagueRunsbyYear("NL", startyear+i-1)
+  }
+  df <- data.frame(League=c(rep("AL",n),rep("NL",n)), Year=rep(c(seq(startyear,startyear+n-1)),2), Runs=c(ALruns, NLruns))
+  ggplot(df, aes(x=Year, y=Runs, group=League))+
+    geom_point(aes(color=League), position="identity", size=3)+
+    #geom_vline(xintercept=1973, linetype = "dashed")+
+    scale_color_manual(values=c("#0073C2FF","#EFC000FF"))+
+    ggtitle(paste("Runs for", startyear,"to",endyear))+
+    theme(axis.text.x = element_text(size = 8, angle = 45, hjust=0, vjust=0))
+}
+
+comboPlot <-function(startyear, endyear, stat1, stat2)
+{
+  ALmeans <- c()
+  NLmeans <- c()
+  ALstat <- c()
+  NLstat <- c()
+  n <- ceiling(endyear/10)-floor(startyear/10)
+  for (i in 1:n)
+  {
+    ALmeans[[i]] <- meanTest(startyear -startyear%%10+10*(i-1), startyear-startyear%%10 +10*i, stat1, "AL")
+    NLmeans[[i]] <- meanTest(startyear -startyear%%10+10*(i-1), startyear -startyear%%10+10*i, stat1, "NL")
+    ALstat[[i]] <- leagueMeanRuns("AL", startyear -startyear%%10+10*(i-1), startyear-startyear%%10 +10*i, "Y")
+    NLstat[[i]] <- leagueMeanRuns("NL", startyear -startyear%%10+10*(i-1), startyear-startyear%%10 +10*i, "Y")
+  }
+  means <- data.frame(League = c(rep("AL",n),rep("NL",n)), Decade=rep(c(seq(startyear-startyear%%10, endyear-endyear%%10,10)),2), Means=c(ALmeans, NLmeans))
+  Stats <- data.frame(League = c(rep("AL",n),rep("NL",n)), Decade=rep(c(seq(startyear-startyear%%10, endyear-endyear%%10,10)),2), Stat=c(ALstat, NLstat))
+  if (stat1!="BA"){ggplot(means, aes(fill=League)) +
+    geom_bar(aes(x=Decade, y=Means),position="dodge", stat="identity")+
+    scale_fill_manual(values=c("#0073C2FF","#EFC000FF"))+
+    scale_color_manual(values=c("#0073C2FF","#EFC000FF"))+
+    geom_line(data=Stats, aes(x=Decade, y= Stat, color=League),size =1.5)+
+    geom_point(data=Stats,aes(x=Decade, y=Stat))+
+      #geom_vline(xintercept=1973, linetype = "dashed")+
+    ggtitle(paste("Avg team", stat1,"(lines) and avg", stat2,"(bars) for", startyear,"to",endyear))+
+    scale_x_continuous(breaks=seq(startyear-startyear%%10, endyear + 10-endyear%%10,10))+
+    theme(axis.text.x = element_text(size = 8, angle = 45, hjust=0, vjust=0))+
+    theme_minimal()+
+    xlab("Decade")+ ylab("Mean")}
+  else {
+    g1 <- ggplot(means, aes(fill=League))+
+        geom_bar(aes(x=Decade, y=Means),position="dodge", stat="identity")+
+        scale_fill_manual(values=c("#0073C2FF","#EFC000FF"))+
+        ggtitle(paste("Average team",stat1,"for",startyear,"to",endyear))+
+      #geom_vline(xintercept=1973, linetype = "dashed")+
+        scale_x_continuous(breaks=seq(startyear-startyear%%10, endyear + 10-endyear%%10,10))+
+        theme(axis.text.x = element_text(size = 8, angle = 45, hjust=0, vjust=0))+
+        theme_minimal()+
+        xlab("Decade")+ ylab("Mean")
+    g2 <- ggplot(Stats)+
+        geom_line(aes(x=Decade, y= Stat, color=League),size =1.5)+
+        geom_point(data=Stats,aes(x=Decade, y=Stat))+
+        scale_color_manual(values=c("#0073C2FF","#EFC000FF"))+
+        ggtitle(paste("Average team",stat2,"for",startyear,"to",endyear))+
+      #geom_vline(xintercept=1973, linetype = "dashed")+
+        scale_x_continuous(breaks=seq(startyear-startyear%%10, endyear + 10-endyear%%10,10))+
+        theme(axis.text.x = element_text(size = 8, angle = 45, hjust=0, vjust=0))+
+        theme_minimal()+
+        xlab("Decade")+ ylab("Mean")
+    grid.arrange(g2,g1, ncol=1)
+      }
+}
+
+perABPlot <- function(stat)
+{
+  statCol <- yearSummaryTable[[stat]]/yearSummaryTable$AB
+  ggplot(yearSummaryTable, aes(x=Year, y=statCol, group=League))+
+  geom_line(aes(color=League), size=1)+scale_color_manual(values=c("#0073C2FF","#EFC000FF"))+
+  geom_vline(xintercept=1973, linetype = "dashed")+
+  ggtitle(paste(stat, "per At Bat"))+
+  xlab("Decade")+ ylab("H/AB")
+}
+
+as.data.frame.htest <- function(x) {
+    x <- unclass(x)
+    names <- c("statistic", "estimate", "parameter", "p.value")
+    x <- x[names]
+    x <- x[!sapply(x, is.null)]
+    for (i in seq_along(x)) {
+        if (!is.null(names(x[[i]])))
+            names(x)[i] <- names(x[[i]])
+    }
+    as.data.frame(x, stringsAsFactors = FALSE)
+}
+```
+
+# Contribution Statement
+
+$\quad$ Rick Bump: $t$-test development, editing, visualization development, model development
+
+$\quad$ Ben Harwood: Model, visualization, and R function development, markdown file production
+
+$\quad$ Xavier Noel: Visualization development, exploratory data analysis, model development
+
+$\quad$ Kevin Schaeffer: Group 1 administrative assistant, model development, presentation creation, junior baseball historian.
+
+# Introduction
+$\quad$ In 1887, Major League baseball adapted the rules to allow extra players to be assigned to a team’s roster and be substituted into the game between innings. Changes like these, in the early days of baseball, generated a period of pitching dominance that ran into the late 1960’s. Of Major League Baseball’s two Leagues, the American League was lagging behind the National League in both scoring and attendance.  In 1973, the Designated Hitter was approved in the American League through rule 5.11. The rule allows for one player, or Designated Hitter, to bat in a fixed spot in the lineup as a substitute to the pitcher. 
+ 
+Forty-six years later, the American League (AL) still uses the DH, while the National League (NL) has continued to vote against adopting the change. In 1997, Major League Baseball introduced play between American and National League teams during the regular season. In those games, the rules of the home team are used. Major League Baseball (MLB) has taken steps over the last decade attempting to increase interest amongst younger fans through increased offense, a similar challenge the American League faced in the 1960s. 
+
+Major League Baseball tasked our team with determining if the NL should, in fact, adopt the DH. We have developed a data analysis and recommendation for Major League Baseball to determine whether or not the National League should adopt the Designated Hitter. We evaluated the trends in offensive statistics in both leagues, before and after 1973. Additionally, we used relationship based models to identify if there is a correlation between the use of the Designated Hitter and Offense, or runs scored.
+
+# Data
+
+$\quad$ MLB has made available a collection of batting data going all the way back to 1871 (not long after the very first team, the Cincinnati Red Stockings, was founded in 1869). The data may also be found at this link: https://www.kaggle.com/open-source-sports/baseball-databank\#Batting.csv. We have four main objectives:
+
+\begin{enumerate}
+  \item Evaluate the trends and changes in the distribution of hits (singles, doubles, triples, HR) over time, by team and league.
+  \item Evaluate the change in American League Batting after the switch to using a DH.
+  \item Compare AL and NL hitting from the time the DH was introduced.
+  \item Determine the impact of batting statistics on runs scored
+\end{enumerate}
+
+```{r, include=FALSE}
+batting <- read.csv("E:/Documents/IST 687/Final Project/Data sets/Batting.csv")
+colnames(batting)[9:11]<-c("Singles","Doubles","Triples")
+```
+The data set includes quite a bit of information:
+```{r results="asis", echo=FALSE}
+kable(head(batting), "latex", booktabs=TRUE) %>%
+  kable_styling(latex_options = "scale_down")
+```
+
+Most of this data we do not need. There are actually six different leagues represented in the data, as well as no league identification until 1876. Because we are focusing on the NL and AL, we will exclude anything prior to 1901 (the American League did not exist prior to 1901) as well as data from the other leagues.
+
+```{r results="asis", echo=FALSE}
+batting <- subset(batting, batting$lgID == "AL" | batting$lgID == "NL" &batting$yearID >=1901)
+```
+
+
+$\quad$ The data has an extensive amount of missing values. This is to be expected, as any AL pitcher will not have batting data after 1973. Additionally, there are other instances of players with 0 at-bats (dedicated pinch-runners, for example), so we remove those as well.
+
+```{r, echo=FALSE}
+batting <- subset(batting, batting$AB >0)
+```
+
+## Exploratory Data Analysis
+
+$\quad$ As we are focused only on the various hitting statistics, we only really need five of the variables. 
+```{r results="asis", echo=FALSE}
+t1<- kable(round(t(stat.desc(subset(batting[,9:13], batting$lgID =="NL" & batting$yearID >= 1931 & batting$yearID <= 2015)))[,c(4,5,6,8,9,13)]),"latex",booktabs=TRUE) %>% kable_styling(latex_options="scale_down")
+t2<- kable(round(t(stat.desc(subset(batting[,9:13], batting$lgID =="AL" & batting$yearID >= 1931 & batting$yearID <= 2015)))[,c(4,5,6,8,9,13)]),"latex",booktabs=TRUE) %>% kable_styling(latex_options="scale_down")
+cat(c("\\begin{table}[H]
+    \\begin{minipage}{.5\\linewidth}
+      \\caption{National League}",
+        t1,
+    "\\end{minipage}
+    \\begin{minipage}{.5\\linewidth}
+      \\caption{American League}",
+        t2,
+    "\\end{minipage} 
+\\end{table}")) 
+
+```
+
+The descriptive statistics above are, obviously, for each of the four hit categories (and RBI's while we're at it). This is reflective of data from 1931 to 2015, which puts our year of interest right in the middle. Nothing especially enlightening, so let's look at singles and RBI's. 
+
+```{r, echo=FALSE, fig.width=8, fig.align="center"}
+combinedMeanDecadesPlot(1931,2015,"Singles")
+```
+It should come as no surprise to see the sharp increase on the AL side in the early 1970s given that the DH came to being in 1973. This is, perhaps unsurprisingly, by the RBI data.
+
+```{r, echo=FALSE, fig.width=8,fig.align="center"}
+#grid.arrange(meanDecadesPlot(1931,2015,"RBI","AL"),meanDecadesPlot(1931,2015,"RBI","NL"),ncol=2)
+combinedMeanDecadesPlot(1931,2015,"RBI")
+```
+Here's one that's really interesting: batting average. Batting average(BA) is not included in the initial data set, but we can add it using the following formula (BB stands for walks)
+$$ BA =\frac{H+2B+3B+HR-BB}{AB}$$
+
+```{r, echo=FALSE, fig.width=7,fig.align="center"}
+batting <- mutate(batting, BA=(batting$Singles+batting$Doubles+batting$Triples+batting$HR-batting$BB)/batting$AB)
+
+#grid.arrange(meanDecadesPlot(1931,2015,"BA","AL"),meanDecadesPlot(1931,2015,"BA","NL"),ncol=2)
+combinedMeanDecadesPlot(1931,2015,"BA")
+```
+
+Here again we see the shift in leadership between the two leagues in the 1970's. If our goal is to generate more exciting games through offense, a strong case in favor of the DH is beginning to take shape.
+
+# Deeper Analysis
+
+$\quad$ Let's begin our deeper dive by looking at how many runs each league scored. 
+
+## Runs
+
+```{r results="asis", echo=FALSE}
+managers <- read.csv("E:/Documents/IST 687/Final Project/Data sets/Managers.csv")
+colnames(managers)[7:8]<-c("Wins","Losses")
+#kable(head(managers), "latex", booktabs=TRUE) %>% kable_styling(position="center")
+managers <- subset(managers,managers$lgID== "AL"| managers$lgID=="NL" & managers$yearID >= 1901)
+```
+
+```{r, echo=FALSE, fig.height = 3, fig.width=7,fig.align="center"}
+leagueRunsCombinedPlot(1931,1973,"N")
+leagueRunsCombinedPlot(1973,2015,"Y")
+```
+$\quad$ This is perhaps our first... "interesting" result, at least on the surface. Until 1976, the leagues were fairly well matched in terms of run counts. Then the AL run count jumped by over 1000 runs while the NL stayed the same. This is actually due to the AL adding two teams (Seattle and Toronto) while the NL stayed at twelve teams. Additionally, the sudden overtake by the NL in 1998 was due to further expansion, bringing the team counts to 16 and 14 for the NL and AL, respectively. Then in 2013, one team was moved from the NL to the AL to even the team distribution which closed the gap between the two leagues in their run counts. Let's see if we there is any relationship between runs and different batting stats.
+
+```{r, echo=FALSE, fig.height=4, fig.width=6, fig.align="center"}
+comboPlot(1931,2015,"Singles","Runs")
+```
+
+$\quad$ This is an interesting plot. It shows a clear discrepancy between the two leagues' singles counts, and the run counts mirror this behavior. This is our first real indicator of the effect of the insitution of the DH into the AL. More enlightening is batting average.
+
+```{r echo=FALSE, fig.height=4, fig.width=6, fig.align="center"}
+comboPlot(1931,2015,"BA","Runs")
+```
+
+Notice the dramatic shift in power from the NL to the AL in the 70's in both batting average and runs scored. The case in favor of adding the DH to NL is getting stronger.
+
+## Models
+
+$\quad$ We became curious to see the hits per at-bat ratio differed between leagues before and after the DH introduction. Intuitively, one would suspect that because of the removal of the "weak hitters" that the AL would lead in this consideration after 1973, and indeed the plot reflects this. However, in considering the potential impact of the the use of the designated hitter for the generation of offense we used a single-sample t-test (testing for AL hits/at-bat being greater than NL hits/at-bat). We created a portable metric of hits/at-bats to remove any fluctuation due to games played, shortened seasons, etc. in the ratio of hits/at-bat for the AL against that of the NL for the period of 1973 through 2015.
+
+```{r results="asis", echo=FALSE, fig.width=6, fig.align="center"}
+singles <- aggregate(batting$Singles, by=list(batting$teamID, batting$yearID, batting$lgID), FUN = sum)
+doubles <- aggregate(batting$Doubles, by=list(batting$teamID, batting$yearID, batting$lgID), FUN=sum)
+triples <- aggregate(batting$Triples, by=list(batting$teamID, batting$yearID, batting$lgID), FUN=sum)
+homers <- aggregate(batting$HR, by=list(batting$teamID, batting$yearID, batting$lgID), FUN=sum)
+hits <- aggregate(batting$Singles+batting$Doubles+batting$Triples+batting$HR, by=list(batting$teamID, batting$yearID, batting$lgID), FUN=sum)
+balls <- aggregate(batting$BB, by=list(batting$teamID, batting$yearID, batting$lgID), FUN=sum)
+runs <- aggregate(batting$R, by=list(batting$teamID, batting$yearID, batting$lgID), FUN=sum)
+ab <- aggregate(batting$AB, by=list(batting$teamID, batting$yearID, batting$lgID), FUN=sum)
+rbi <- aggregate(batting$RBI, by=list(batting$teamID, batting$yearID, batting$lgID), FUN=sum)
+wins <- aggregate(managers$Wins, by=list(managers$teamID, managers$yearID, managers$lgID), FUN=sum)
+losses <- aggregate(managers$Losses, by=list(managers$teamID, managers$yearID, managers$lgID), FUN=sum)
+statTable <- data.frame(singles, doubles$x, triples$x, homers$x, runs$x, hits$x, balls$x, ab$x, rbi$x, wins$x, losses$x, wins$x/(wins$x+losses$x))
+colnames(statTable) <- c("Team", "Year", "League", "Singles", "Doubles", "Triples", "Homers", "Runs", "Hits", "Balls", "AB", "RBI", "Wins", "Losses", "WRatio")
+
+yearSummaryTable <- statTable[,2:14]
+yearSummaryTable <- aggregate(.~Year+League, data=yearSummaryTable, FUN=sum)
+yearSummaryTable <- yearSummaryTable[order(yearSummaryTable$Year),]
+yearSummaryTable$BA <- (yearSummaryTable$Hits-yearSummaryTable$Balls)/yearSummaryTable$AB
+yearSummaryTable$Hits_AB <- yearSummaryTable$Hits/yearSummaryTable$AB
+
+ttest <- t.test(x=yearSummaryTable$Hits_AB[yearSummaryTable$League=="AL" & yearSummaryTable$Year >= 1975], y=yearSummaryTable$Hits_AB[yearSummaryTable$League=="NL" & yearSummaryTable$Year >= 1975], alternative = c("greater"), mu = 0, paired = FALSE, var.equal = FALSE, conf.level = 0.95)
+```
+
+$\quad$ The $t$-test is significant ($p=$ `r signif(ttest$p.value,2)`), with a mean for the AL of `r ttest$estimate[1]` and a mean for the NL of `r ttest$estimate[2]`. In other words, there is a `r signif(100*(1-ttest$p.value),4)`% chance that there is an increase in offense generated by using the designated hitter. 
+
+```{r results="asis", echo=FALSE, fig.width=6, fig.align="center"}
+perABPlot("Hits")
+```
+
+$\quad$ One thing we could do, while we're here, is to exploit the power of statistics and perform a regression to see how well single base hits predict runs. We would like to do this for every batting stat, but we must run diagnostics on the data first before regression can be reliably interpreted. The following table shows the result of the Breusch Pagan test for heteroscedasticity, and whether the data passes the test. Anything marked "no" (based on significance of the test) will need to be transformed before regression is trustworthy.
+
+```{r results="asis", echo=FALSE}
+bpTable <- function(stat)
+{
+  stats <- c("Singles", "Doubles", "Triples", "Homers", "Hits", "BA", "Hits_AB")
+  bp<-c()
+  for (i in stats)
+  {
+    bp[[i]] <- bptest(yearSummaryTable[[stat]]~yearSummaryTable[[i]], data=yearSummaryTable)$p.value
+  }
+  bp <- signif(bp,4)
+  kable(data.frame(BP.PValue=bp, Use=ifelse(bp>0.05,"Yes","No")), caption="Breusch Pagan Reults", booktabs=TRUE) %>%
+    kable_styling(latex_options = "hold_position")
+}
+bpTable("Runs")
+```
+
+Singles, doubles, hits, batting average, and hits per at-bat must be transformed. Once we do that then we can proceed with our regression models. Similarly to the Breusch-Pagan test, we present a table with the $R^{2}$ and significance of each variable.
+
+```{r results="asis", echo=FALSE}
+yearSummaryTable$tSingles <- boxcox(yearSummaryTable$Singles)$data
+yearSummaryTable$tDoubles <- boxcox(yearSummaryTable$Doubles)$data
+yearSummaryTable$tHits <- boxcox(yearSummaryTable$Hits)$data
+yearSummaryTable$tBA <- boxcox(yearSummaryTable$BA)$data
+yearSummaryTable$tHits_AB <- boxcox(yearSummaryTable$Hits_AB)$data
+
+lmTable <- function(stat)
+{
+  stats <- c("tSingles", "tDoubles", "Triples", "Homers", "tHits", "tBA", "tHits_AB")
+  pValues<-c()
+  variances <- c()
+  for (i in stats)
+  {
+    l<-lm(yearSummaryTable[[stat]]~yearSummaryTable[[i]], data=yearSummaryTable)
+    f<-summary(l)$fstatistic
+    p<- pf(f[1],f[2],f[3],lower.tail=FALSE)
+    attributes(p) <- NULL
+    pValues[[i]] <- p
+    variances[[i]] <- summary(l)$r.squared
+  }
+  kable(data.frame(P.Value=pValues, "R^2"=variances), caption="Regression Results", booktabs=TRUE) %>% 
+    kable_styling(latex_options = "HOLD_position")
+}
+lmTable("Runs")
+```
+
+$\quad$ These results are very enlightening. They show that each of the batting statistics do contribute toward the run count, however they also show that some statistics contribute very little. We can see that overall hits account for the most variance (this shouldn't be a surprise, since hits are basically required for runs). Clearly, triples are not especially helpful due to the insignificant regression. This could be due to the small number of triples that are hit. But also notice batting average only accounting for 12.7% of the variance. This is surprising, as conventional wisdom would suggest that teams with strong batting averages should score more runs, while weaker batting average teams would score fewer runs. In other words, overall batting performance has very little influence on whether a team wins or loses. Let's now do the same thing for each league to see if there is any noticeable difference. 
+
+```{r results="asis", echo=FALSE}
+lmTableLeague <- function(stat, league)
+{
+  lg <- subset(yearSummaryTable,League==league)
+  stats <- c("tSingles", "tDoubles", "Triples", "Homers", "tHits", "tBA", "tHits_AB")
+  pValues<-c()
+  variances <- c()
+  for (i in stats)
+  {
+    l<-lm(lg[[stat]]~lg[[i]], data=lg)
+    f<-summary(l)$fstatistic
+    p<- pf(f[1],f[2],f[3],lower.tail=FALSE)
+    attributes(p) <- NULL
+    pValues[[i]] <- p
+    variances[[i]] <- summary(l)$r.squared
+  }
+  kable(data.frame(P.Value=pValues, "R^2"=variances), format="latex", booktabs=TRUE)
+}
+t1 <- lmTableLeague("Runs", "NL")
+t2 <- lmTableLeague("Runs", "AL")
+cat(c("\\begin{table}[!htb]
+    \\begin{minipage}{.5\\linewidth}
+      \\caption{National League}
+      \\centering",
+        t1,
+    "\\end{minipage}%
+    \\begin{minipage}{.5\\linewidth}
+      \\centering
+        \\caption{American League}",
+        t2,
+    "\\end{minipage} 
+\\end{table}"))  
+```
+Notice here that five of the stats are effectively the same between the two leagues, except batting average. In the AL, we can account for 27.6% of the variance with batting average, compared to a meager 5.2% for the NL. Let's conclude this portion of the analysis by focusing on the two time windows we have considered previously.
+
+```{r results="asis", echo=FALSE}
+lmTableLeagueRange <- function(stat, league, startyear, endyear)
+{
+  lg <- subset(yearSummaryTable,League==league & Year>=startyear & Year <= endyear)
+  stats <- c("tSingles", "tDoubles", "Triples", "Homers", "tHits", "tBA", "tHits_AB")
+  pValues<-c()
+  variances <- c()
+  for (i in stats)
+  {
+    l<-lm(lg[[stat]]~lg[[i]], data=lg)
+    f<-summary(l)$fstatistic
+    p<- pf(f[1],f[2],f[3],lower.tail=FALSE)
+    attributes(p) <- NULL
+    pValues[[i]] <- p
+    variances[[i]] <- summary(l)$r.squared
+  }
+  kable(data.frame(P.Value=pValues, "R^2"=variances), format="latex", booktabs=TRUE)
+}
+t1 <- lmTableLeagueRange("Runs", "NL", 1931,1973)
+t2 <- lmTableLeagueRange("Runs", "AL", 1931,1973)
+cat(c("\\begin{table}[!htb]
+    \\begin{minipage}{.5\\linewidth}
+      \\caption{National League, 31-73}
+      \\centering",
+        t1,
+    "\\end{minipage}%
+    \\begin{minipage}{.5\\linewidth}
+      \\centering
+        \\caption{American League, 31-73}",
+        t2,
+    "\\end{minipage} 
+\\end{table}"))  
+```
+
+Notice that for the 42 years prior to the DH implentation, only hits and maybe singles could reliably predict runs. Now, let's look at the 42 years after the DH implementation.
+
+```{r results="asis", echo = FALSE}
+t1 <- lmTableLeagueRange("Runs", "NL", 1973,2015)
+t2 <- lmTableLeagueRange("Runs", "AL", 1973,2015)
+cat(c("\\begin{table}[!htb]
+    \\begin{minipage}{.5\\linewidth}
+      \\caption{National League, 1973-2015}
+      \\centering",
+        t1,
+    "\\end{minipage}%
+    \\begin{minipage}{.5\\linewidth}
+      \\centering
+        \\caption{American League, 1973-2015}",
+        t2,
+    "\\end{minipage} 
+\\end{table}")) 
+```
+
+We showed earlier that there was a `r signif(100*(1-ttest$p.value),4)`% chance that using a designated hitter would lead to more offense. Here is evidence that having a designated hitter makes predicting runs scored less reliable. This does not counter the previous result, however. 
+
+$\quad$ A natural next step would be to test for variable interactions, but first we must check correlation:
+
+```{r, fig.height=4, echo=FALSE}
+sub <- yearSummaryTable[,c(7,5,6,16:20)]
+cormat <- round(cor(sub),2)
+melt <- melt(cormat)
+ggplot(data = melt, aes(Var2, Var1, fill = value))+
+ geom_tile(color = "white")+
+ scale_fill_gradient2(low = "blue", high = "red", mid = "white", 
+   midpoint = 0, limit = c(-1,1), space = "Lab", 
+   name="Pearson\nCorrelation") +
+  theme_minimal()+ 
+ theme(axis.text.x = element_text(angle = 45, vjust = 1, 
+    size = 12, hjust = 1))+
+ coord_fixed()
+```
+
+Clearly, variable interaction is not something we can really consider given the immense level of correlation. 
+
+# Conclusions
+
+$\quad$ We recommend that Major League Baseball fully adopt the utilization of designated hitters. We evaluated the trends and changes in the distribution of hits in both leagues throughout the life of MLB and there is a significant change after the introduction of the designated hitter in the American League. After confirming there was a positive shift in offense generation, we compared the American and National Leagues to see how significant the shift was. Our analysis has revealed that the addition of the designated hitter in the American League has provided a lift in offense, RBIs and hits have increased and utilizing a single sample t-test we were able to confirm with over 95% confidence that the utilization of a designated hitter increases offense. We believe that adopting the designated hitter throughout the major leagues will increase attendance, viewership and profit. 
+
+$\quad$ We would also like to conduct further study of the following questions:
+
+\begin{enumerate}
+\item Does an increase in offense lead to increased ticket sales?
+\item Does an increase in offense lead to an increase in consumer engagement?
+\item Does an increase in offense broaden the potential market outside of traditional baseball fans?
+\item	Do fans have an increase in excitement when designated hitters come up to bat, potentially increasing enjoyment of the game?  
+\item	Does the increase of offense lead to better or more exciting defensive plays that generate consumer engagement? 
+\item	Would the complete adoption of a designated hitter marginalize baseball purists?
+\end{enumerate}
+
+We believe answering these questions would provide a fuller picture and aid in the final decision of whether to institute the designated hitter for both leagues.
+
+# References
+```{r results="asis", echo=FALSE, linewidth=60}
+bib <- ReadBib("E:/Documents/IST 687/Final Project/bibliography.bib")
+NoCite(bib, title="League")
+NoCite(bib, title="Hitter")
+NoCite(bib, title="MLB")
+NoCite(bib, title="Historical")
+BibOptions(style="markdown", bib.style="alphabetic")
+PrintBibliography(bib) 
+
+```
