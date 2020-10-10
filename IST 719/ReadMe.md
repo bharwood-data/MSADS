@@ -1,6 +1,6 @@
 # IST 719 - Information Visualization
 
-Ben HArwood
+Ben Harwood
 
 ## Contents
 
