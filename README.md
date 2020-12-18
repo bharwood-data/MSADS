@@ -20,6 +20,8 @@ IST 707 - Data Analytics
 
 IST 719 - Data Visualization
 
+IST 736 - Text Mining
+
 IST 772 - Quantitative Reasoning in Data Science
 
 MBS 638 - Data Analysis and Decision Making
